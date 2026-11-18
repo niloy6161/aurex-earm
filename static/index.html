@@ -11,31 +11,31 @@
 <body>
   <main class="app">
     <h1>✨ Aurex Earn</h1>
-    <p class="subtitle">Welcome to your earning journey!</p>
+    <p class="subtitle" id="welcome">Welcome to your earning journey!</p>
 
     <section class="balance">
       <p>Your Balance</p>
-      <h2>৳0.00</h2>
+      <h2 id="balance">Loading...</h2>
       <small>Minimum Withdraw: ৳50</small>
     </section>
 
     <section class="tasks">
       <h3>💰 Earn Money</h3>
       <p>Complete tasks and earn rewards.</p>
-      <button onclick="alert('Tasks coming soon!')">View Tasks</button>
+      <button onclick="comingSoon()">View Tasks</button>
     </section>
 
     <section class="tasks">
       <h3>👥 Referral</h3>
       <p>Invite friends and earn bonuses.</p>
-      <button onclick="alert('Referral coming soon!')">Invite Friends</button>
+      <button onclick="comingSoon()">Invite Friends</button>
     </section>
 
     <section class="tasks">
       <h3>💳 Withdraw</h3>
       <p>Payment methods: bKash and Nagad</p>
       <p>Minimum withdrawal: ৳50</p>
-      <button onclick="alert('Withdrawal system coming soon!')">Withdraw</button>
+      <button onclick="comingSoon()">Withdraw</button>
     </section>
   </main>
 
@@ -43,6 +43,44 @@
     const tg = window.Telegram.WebApp;
     tg.ready();
     tg.expand();
+
+    function comingSoon() {
+      alert("This feature is coming soon!");
+    }
+
+    async function loadBalance() {
+      const balanceElement = document.getElementById("balance");
+
+      try {
+        const response = await fetch("/api/me", {
+          headers: {
+            "X-Telegram-Init-Data": tg.initData
+          }
+        });
+
+        if (!response.ok) {
+          throw new Error("Login verification failed");
+        }
+
+        const data = await response.json();
+
+        balanceElement.textContent =
+          "৳" + Number(data.balance).toFixed(2);
+
+        const name = data.username
+          ? "@" + data.username
+          : "User";
+
+        document.getElementById("welcome").textContent =
+          "Welcome, " + name + "!";
+
+      } catch (error) {
+        balanceElement.textContent = "Unable to load";
+        console.error(error);
+      }
+    }
+
+    loadBalance();
   </script>
 </body>
 </html>
