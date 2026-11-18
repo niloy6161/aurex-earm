@@ -480,5 +480,213 @@ async def decide_withdrawal(data: WithdrawalDecision, request: Request):
 async def home():
     return {"message": "Aurex Earn is running"}
 
+class TaskCreate(BaseModel):
+    title: str
+    description: str = ""
+    link: str
+    reward: float
+
+
+class TaskSubmit(BaseModel):
+    task_id: int
+
+
+class TaskDecision(BaseModel):
+    submission_id: int
+    action: str
+
+
+@app.post("/api/admin/tasks")
+async def create_task(data: TaskCreate, request: Request):
+    await require_admin(request)
+
+    if not data.title.strip() or not data.link.strip() or data.reward <= 0:
+        raise HTTPException(status_code=400, detail="Invalid task details")
+
+    conn = db()
+    conn.execute("""
+        INSERT INTO tasks (title, description, link, reward)
+        VALUES (?, ?, ?, ?)
+    """, (data.title.strip(), data.description.strip(),
+          data.link.strip(), data.reward))
+    conn.commit()
+    conn.close()
+
+    return {"success": True, "message": "Task created"}
+
+
+@app.get("/api/tasks")
+async def get_tasks(request: Request):
+    user = await get_verified_user(request)
+    conn = db()
+
+    rows = conn.execute("""
+        SELECT t.id, t.title, t.description, t.link, t.reward,
+               s.status
+        FROM tasks t
+        LEFT JOIN task_submissions s
+        ON t.id = s.task_id AND s.user_id = ?
+        WHERE t.active = 1
+        ORDER BY t.id DESC
+    """, (user["id"],)).fetchall()
+
+    conn.close()
+    return {
+        "tasks": [
+            {
+                "id": r[0],
+                "title": r[1],
+                "description": r[2],
+                "link": r[3],
+                "reward": r[4],
+                "submission_status": r[5]
+            }
+            for r in rows
+        ]
+    }
+
+
+@app.post("/api/tasks/submit")
+async def submit_task(data: TaskSubmit, request: Request):
+    user = await get_verified_user(request)
+    conn = db()
+
+    task = conn.execute(
+        "SELECT id FROM tasks WHERE id = ? AND active = 1",
+        (data.task_id,)
+    ).fetchone()
+
+    if not task:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    try:
+        conn.execute("""
+            INSERT INTO task_submissions (task_id, user_id)
+            VALUES (?, ?)
+        """, (data.task_id, user["id"]))
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.close()
+        raise HTTPException(
+            status_code=400, detail="Task already submitted"
+        )
+
+    conn.close()
+    return {"success": True, "status": "pending"}
+
+
+@app.get("/api/admin/tasks")
+async def admin_get_tasks(request: Request):
+    await require_admin(request)
+    conn = db()
+    rows = conn.execute("""
+        SELECT id, title, description, link, reward, active
+        FROM tasks ORDER BY id DESC
+    """).fetchall()
+    conn.close()
+
+    return {
+        "tasks": [
+            {
+                "id": r[0], "title": r[1],
+                "description": r[2], "link": r[3],
+                "reward": r[4], "active": r[5]
+            }
+            for r in rows
+        ]
+    }
+
+
+@app.get("/api/admin/task-submissions")
+async def admin_task_submissions(request: Request):
+    await require_admin(request)
+    conn = db()
+    rows = conn.execute("""
+        SELECT s.id, s.task_id, t.title, s.user_id,
+               u.username, t.reward, s.status, s.created_at
+        FROM task_submissions s
+        JOIN tasks t ON t.id = s.task_id
+        JOIN users u ON u.user_id = s.user_id
+        ORDER BY s.id DESC
+    """).fetchall()
+    conn.close()
+
+    return {
+        "submissions": [
+            {
+                "id": r[0], "task_id": r[1],
+                "title": r[2], "user_id": r[3],
+                "username": r[4], "reward": r[5],
+                "status": r[6], "created_at": r[7]
+            }
+            for r in rows
+        ]
+    }
+
+
+@app.post("/api/admin/task-decision")
+async def decide_task(data: TaskDecision, request: Request):
+    await require_admin(request)
+
+    if data.action not in ["approve", "reject"]:
+        raise HTTPException(status_code=400, detail="Invalid action")
+
+    conn = db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+
+        row = conn.execute("""
+            SELECT s.user_id, s.status, t.reward
+            FROM task_submissions s
+            JOIN tasks t ON t.id = s.task_id
+            WHERE s.id = ?
+        """, (data.submission_id,)).fetchone()
+
+        if not row:
+            raise HTTPException(status_code=404, detail="Submission not found")
+
+        user_id, status, reward = row
+
+        if status != "pending":
+            raise HTTPException(status_code=400, detail="Already processed")
+
+        new_status = "approved" if data.action == "approve" else "rejected"
+
+        conn.execute(
+            "UPDATE task_submissions SET status = ? WHERE id = ?",
+            (new_status, data.submission_id)
+        )
+
+        if data.action == "approve":
+            conn.execute(
+                "UPDATE users SET balance = balance + ? WHERE user_id = ?",
+                (reward, user_id)
+            )
+
+        conn.commit()
+
+        if bot:
+            try:
+                if data.action == "approve":
+                    await bot.send_message(
+                        user_id,
+                        f"🎉 Task approved! ৳{reward:.2f} added to your balance."
+                    )
+                else:
+                    await bot.send_message(
+                        user_id, "❌ Your task submission was rejected."
+                    )
+            except Exception:
+                pass
+
+        return {"success": True, "status": new_status}
+
+    except HTTPException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
