@@ -22,6 +22,7 @@ textarea{min-height:65px}
 .status{color:#36d6c3;font-weight:bold}
 .danger{background:#e45b64}
 hr{border-color:#35465a;margin:20px 0}
+.referral-link{overflow-wrap:anywhere;background:#0b1b30;padding:12px;border-radius:8px;color:#36d6c3;font-size:13px}
 </style>
 </head>
 <body>
@@ -60,8 +61,19 @@ hr{border-color:#35465a;margin:20px 0}
 </div>
 
 <div class="card">
-<h3>Referral</h3>
-<p class="small">Referral system coming soon.</p>
+<h3>👥 Refer & Earn</h3>
+<p class="small">Invite your friends to Aurex Earn. When a referred friend completes their first task and the admin approves it, you will receive ৳1.</p>
+
+<p><b>Your Referral Link</b></p>
+<div id="referralLink" class="referral-link">Loading referral link...</div>
+
+<button onclick="copyReferralLink()">📋 Copy Referral Link</button>
+<p class="small" id="copyMessage"></p>
+
+<hr>
+<p>👥 Total Referrals: <b id="referralCount">0</b></p>
+<p>🎁 Successful Referral Rewards: <b id="referralRewards">0</b></p>
+<p class="small">Reward: ৳1 per successful referral.</p>
 </div>
 
 <div class="card hidden" id="adminPanel">
@@ -122,14 +134,51 @@ async function loadMe(){
 try{
 const response = await fetch("/api/me",{headers});
 if(!response.ok) throw new Error("Login failed");
+
 const data = await response.json();
+
 document.getElementById("balance").textContent =
 "৳"+Number(data.balance).toFixed(2);
+
 document.getElementById("username").textContent =
 data.username ? "@"+data.username : "User ID: "+data.user_id;
+
+// Referral information
+document.getElementById("referralLink").textContent =
+data.referral_link || "Referral link unavailable";
+
+document.getElementById("referralCount").textContent =
+Number(data.referral_count || 0);
+
+document.getElementById("referralRewards").textContent =
+Number(data.referral_rewards || 0);
+
 }catch(error){
 document.getElementById("username").textContent =
 "Unable to load account. Open inside Telegram.";
+
+document.getElementById("referralLink").textContent =
+"Unable to load referral link.";
+}
+}
+
+async function copyReferralLink(){
+const link = document.getElementById("referralLink").textContent;
+const message = document.getElementById("copyMessage");
+
+if(!link || link === "Loading referral link..." ||
+link === "Referral link unavailable" ||
+link === "Unable to load referral link."){
+message.textContent = "Referral link is not available.";
+return;
+}
+
+try{
+await navigator.clipboard.writeText(link);
+message.textContent = "✅ Referral link copied!";
+if(tg.showAlert) tg.showAlert("Referral link copied!");
+}catch(error){
+message.textContent = "Please copy this link manually.";
 }
 }
 
