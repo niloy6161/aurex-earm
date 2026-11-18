@@ -12,12 +12,20 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from aiogram import Bot, Dispatcher
 from aiogram.filters import CommandStart
-from aiogram.types import Message, WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    Message, WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton
+)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 WEBAPP_URL = os.getenv("WEBAPP_URL", "")
+ADMIN_IDS = [
+    int(x.strip())
+    for x in os.getenv("ADMIN_IDS", "6359796291").split(",")
+    if x.strip().isdigit()
+]
 DATABASE = "aurex_earn.db"
 
 bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
@@ -77,6 +85,25 @@ def verify_telegram_data(init_data):
         return None
 
 
+async def get_verified_user(request: Request):
+    init_data = request.headers.get("X-Telegram-Init-Data")
+    user = verify_telegram_data(init_data)
+
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid Telegram login")
+
+    return user
+
+
+async def require_admin(request: Request):
+    user = await get_verified_user(request)
+
+    if user.get("id") not in ADMIN_IDS:
+        raise HTTPException(status_code=403, detail="Admin access denied")
+
+    return user
+
+
 @dp.message(CommandStart())
 async def start(message: Message):
     conn = sqlite3.connect(DATABASE)
@@ -88,7 +115,6 @@ async def start(message: Message):
     conn.close()
 
     keyboard = None
-
     if WEBAPP_URL:
         keyboard = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(
@@ -136,35 +162,23 @@ async def health():
 
 @app.get("/api/me")
 async def get_my_balance(request: Request):
-    init_data = request.headers.get("X-Telegram-Init-Data")
-    user = verify_telegram_data(init_data)
-
-    if not user:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid Telegram login"
-        )
-
-    user_id = user.get("id")
+    user = await get_verified_user(request)
+    user_id = user["id"]
     username = user.get("username", "")
 
     conn = sqlite3.connect(DATABASE)
-
     conn.execute(
         "INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)",
         (user_id, username)
     )
-
     conn.execute(
         "UPDATE users SET username = ? WHERE user_id = ?",
         (username, user_id)
     )
-
     row = conn.execute(
         "SELECT balance FROM users WHERE user_id = ?",
         (user_id,)
     ).fetchone()
-
     conn.commit()
     conn.close()
 
@@ -173,6 +187,76 @@ async def get_my_balance(request: Request):
         "username": username,
         "balance": row[0] if row else 0,
         "currency": "BDT"
+    }
+
+
+@app.get("/api/admin/users")
+async def admin_users(request: Request):
+    await require_admin(request)
+
+    conn = sqlite3.connect(DATABASE)
+    rows = conn.execute(
+        "SELECT user_id, username, balance FROM users ORDER BY user_id DESC"
+    ).fetchall()
+    conn.close()
+
+    return {
+        "total_users": len(rows),
+        "users": [
+            {
+                "user_id": row[0],
+                "username": row[1],
+                "balance": row[2]
+            }
+            for row in rows
+        ]
+    }
+
+
+class BalanceUpdate(BaseModel):
+    user_id: int
+    amount: float
+    action: str
+
+
+@app.post("/api/admin/balance")
+async def update_balance(data: BalanceUpdate, request: Request):
+    await require_admin(request)
+
+    if data.amount <= 0 or data.action not in ["add", "deduct"]:
+        raise HTTPException(status_code=400, detail="Invalid amount or action")
+
+    conn = sqlite3.connect(DATABASE)
+    row = conn.execute(
+        "SELECT balance FROM users WHERE user_id = ?",
+        (data.user_id,)
+    ).fetchone()
+
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="User not found")
+
+    new_balance = (
+        row[0] + data.amount
+        if data.action == "add"
+        else row[0] - data.amount
+    )
+
+    if new_balance < 0:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Insufficient balance")
+
+    conn.execute(
+        "UPDATE users SET balance = ? WHERE user_id = ?",
+        (new_balance, data.user_id)
+    )
+    conn.commit()
+    conn.close()
+
+    return {
+        "success": True,
+        "user_id": data.user_id,
+        "new_balance": new_balance
     }
 
 
