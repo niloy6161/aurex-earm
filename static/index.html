@@ -337,7 +337,13 @@ div.appendChild(status);
 }else{
 const visit = document.createElement("button");
 visit.textContent = "Open Task";
-visit.onclick = ()=>window.open(task.link,"_blank");
+visit.onclick = ()=>{
+  if(window.Telegram && window.Telegram.WebApp){
+    window.Telegram.WebApp.openLink(task.link);
+  }else{
+    window.open(task.link,"_blank");
+  }
+};
 div.appendChild(visit);
 
 const submit = document.createElement("button");
