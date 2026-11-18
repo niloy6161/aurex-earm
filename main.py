@@ -396,6 +396,7 @@ async def decide_withdrawal(data: WithdrawalDecision, request: Request):
     conn = db()
     try:
         conn.execute("BEGIN IMMEDIATE")
+
         row = conn.execute("""
             SELECT user_id, amount, status
             FROM withdrawals WHERE id = ?
@@ -423,10 +424,26 @@ async def decide_withdrawal(data: WithdrawalDecision, request: Request):
             )
 
         conn.commit()
+
+        notification = (
+            f"🎉 Your withdrawal of ৳{amount:.2f} has been approved.\n"
+            "Payment will be sent separately."
+            if data.action == "approve"
+            else f"❌ Your withdrawal of ৳{amount:.2f} was rejected.\n"
+                 "The amount has been refunded to your balance."
+        )
+
+        if bot:
+            try:
+                await bot.send_message(user_id, notification)
+            except Exception:
+                pass
+
         return {
             "success": True,
             "withdrawal_id": data.withdrawal_id,
-            "status": new_status
+            "status": new_status,
+            "notification_sent": bool(bot)
         }
 
     except HTTPException:
@@ -434,6 +451,8 @@ async def decide_withdrawal(data: WithdrawalDecision, request: Request):
         raise
     finally:
         conn.close()
+
+
 
 
 @app.get("/api")
