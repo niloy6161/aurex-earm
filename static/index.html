@@ -16,24 +16,33 @@
     <section class="balance">
       <p>Your Balance</p>
       <h2>৳0.00</h2>
+      <small>Minimum Withdraw: ৳50</small>
     </section>
 
     <section class="tasks">
-      <h3>Available Tasks</h3>
-      <p>🚀 More earning tasks coming soon!</p>
+      <h3>💰 Earn Money</h3>
+      <p>Complete tasks and earn rewards.</p>
+      <button onclick="alert('Tasks coming soon!')">View Tasks</button>
     </section>
 
-    <button onclick="showMessage()">Get Started</button>
+    <section class="tasks">
+      <h3>👥 Referral</h3>
+      <p>Invite friends and earn bonuses.</p>
+      <button onclick="alert('Referral coming soon!')">Invite Friends</button>
+    </section>
+
+    <section class="tasks">
+      <h3>💳 Withdraw</h3>
+      <p>Payment methods: bKash and Nagad</p>
+      <p>Minimum withdrawal: ৳50</p>
+      <button onclick="alert('Withdrawal system coming soon!')">Withdraw</button>
+    </section>
   </main>
 
   <script>
     const tg = window.Telegram.WebApp;
     tg.ready();
     tg.expand();
-
-    function showMessage() {
-      alert("Welcome to Aurex Earn!");
-    }
   </script>
 </body>
 </html>
