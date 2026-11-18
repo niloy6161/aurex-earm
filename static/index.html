@@ -3,21 +3,23 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Aurex Earn</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
 *{box-sizing:border-box}
-body{margin:0;padding:20px;background:#081426;color:white;font-family:Arial,sans-serif}
+body{margin:0;padding:18px;background:#081426;color:white;font-family:Arial,sans-serif}
 .container{max-width:600px;margin:auto}
 h1{color:#36d6c3}
 .card{background:#14243a;padding:18px;border-radius:14px;margin:15px 0}
 .balance{font-size:32px;color:#36d6c3;font-weight:bold}
 button{background:#16b9a6;color:#061522;border:0;padding:12px 16px;border-radius:9px;font-weight:bold;cursor:pointer;margin:5px 0}
 input,select{width:100%;padding:12px;margin:7px 0;border-radius:8px;border:1px solid #456;background:#0b1b30;color:white}
-.user{border-bottom:1px solid #35465a;padding:12px 0;overflow-wrap:anywhere}
 .small{color:#aabbd0;font-size:13px}
 .hidden{display:none}
+.item{border-bottom:1px solid #35465a;padding:12px 0;overflow-wrap:anywhere}
+.status{color:#36d6c3;font-weight:bold}
+.danger{background:#e45b64}
 </style>
 </head>
 <body>
@@ -31,6 +33,25 @@ input,select{width:100%;padding:12px;margin:7px 0;border-radius:8px;border:1px s
 </div>
 
 <div class="card">
+<h3>💰 Withdraw Money</h3>
+<p class="small">Minimum withdrawal: ৳50</p>
+<input id="withdrawAmount" type="number" min="50" step="0.01" placeholder="Enter amount">
+<select id="withdrawMethod">
+<option value="bKash">bKash</option>
+<option value="Nagad">Nagad</option>
+</select>
+<input id="accountNumber" type="tel" placeholder="Your bKash / Nagad number">
+<button onclick="submitWithdrawal()">Submit Withdrawal</button>
+<p class="small" id="withdrawMessage"></p>
+</div>
+
+<div class="card">
+<h3>📋 My Withdrawal History</h3>
+<button onclick="loadMyWithdrawals()">Refresh History</button>
+<div id="myWithdrawals" class="small">Loading...</div>
+</div>
+
+<div class="card">
 <h3>Available Tasks</h3>
 <p class="small">Tasks coming soon.</p>
 </div>
@@ -40,15 +61,9 @@ input,select{width:100%;padding:12px;margin:7px 0;border-radius:8px;border:1px s
 <p class="small">Referral system coming soon.</p>
 </div>
 
-<div class="card">
-<h3>Withdraw</h3>
-<p class="small">Minimum withdrawal: ৳50</p>
-<p class="small">bKash / Nagad</p>
-<p class="small">Withdrawal system coming soon.</p>
-</div>
-
 <div class="card hidden" id="adminPanel">
 <h2>🛠 Admin Panel</h2>
+
 <h3>Update User Balance</h3>
 <input id="userId" type="number" placeholder="User Telegram ID">
 <input id="amount" type="number" min="0.01" step="0.01" placeholder="Amount (৳)">
@@ -57,11 +72,17 @@ input,select{width:100%;padding:12px;margin:7px 0;border-radius:8px;border:1px s
 <option value="deduct">Deduct Balance</option>
 </select>
 <button onclick="updateBalance()">Update Balance</button>
-<p id="message" class="small"></p>
+<p id="balanceMessage" class="small"></p>
+
 <hr>
 <h3>All Users</h3>
 <button onclick="loadUsers()">Refresh Users</button>
-<div id="users">Loading...</div>
+<div id="users" class="small"></div>
+
+<hr>
+<h3>💸 Withdrawal Requests</h3>
+<button onclick="loadAdminWithdrawals()">Refresh Requests</button>
+<div id="adminWithdrawals" class="small"></div>
 </div>
 </div>
 
@@ -81,9 +102,9 @@ const response = await fetch("/api/me",{headers});
 if(!response.ok) throw new Error("Login failed");
 const data = await response.json();
 document.getElementById("balance").textContent =
-"৳" + Number(data.balance).toFixed(2);
+"৳"+Number(data.balance).toFixed(2);
 document.getElementById("username").textContent =
-data.username ? "@" + data.username : "User ID: " + data.user_id;
+data.username ? "@"+data.username : "User ID: "+data.user_id;
 }catch(error){
 document.getElementById("username").textContent =
 "Unable to load account. Open inside Telegram.";
@@ -94,6 +115,67 @@ if(tg.initDataUnsafe.user &&
 Number(tg.initDataUnsafe.user.id) === 6359796291){
 document.getElementById("adminPanel").classList.remove("hidden");
 loadUsers();
+loadAdminWithdrawals();
+}
+
+async function submitWithdrawal(){
+const amount = Number(document.getElementById("withdrawAmount").value);
+const method = document.getElementById("withdrawMethod").value;
+const account_number = document.getElementById("accountNumber").value.trim();
+const message = document.getElementById("withdrawMessage");
+
+if(!amount || amount < 50){
+message.textContent = "Minimum withdrawal is ৳50.";
+return;
+}
+if(!account_number){
+message.textContent = "Enter your payment number.";
+return;
+}
+
+message.textContent = "Submitting request...";
+try{
+const response = await fetch("/api/withdraw",{
+method:"POST",
+headers,
+body:JSON.stringify({amount,method,account_number})
+});
+const data = await response.json();
+if(!response.ok) throw new Error(data.detail || "Request failed");
+
+message.textContent = "Request submitted! Request ID: "+data.withdrawal_id;
+document.getElementById("withdrawAmount").value = "";
+document.getElementById("accountNumber").value = "";
+await loadMe();
+await loadMyWithdrawals();
+}catch(error){
+message.textContent = error.message;
+}
+}
+
+async function loadMyWithdrawals(){
+const box = document.getElementById("myWithdrawals");
+box.textContent = "Loading...";
+try{
+const response = await fetch("/api/my-withdrawals",{headers});
+if(!response.ok) throw new Error("Could not load history");
+const data = await response.json();
+box.innerHTML = "";
+if(data.withdrawals.length === 0){
+box.textContent = "No withdrawal requests yet.";
+return;
+}
+data.withdrawals.forEach(item=>{
+const div = document.createElement("div");
+div.className = "item";
+div.textContent =
+"Request #"+item.id+" | ৳"+Number(item.amount).toFixed(2)+
+" | "+item.method+" | "+item.account_number+" | Status: "+item.status;
+box.appendChild(div);
+});
+}catch(error){
+box.textContent = error.message;
+}
 }
 
 async function loadUsers(){
@@ -103,17 +185,17 @@ try{
 const response = await fetch("/api/admin/users",{headers});
 if(!response.ok) throw new Error("Could not load users");
 const data = await response.json();
-box.innerHTML = "<p>Total Users: "+data.total_users+"</p>";
+box.textContent = "Total Users: "+data.total_users;
 data.users.forEach(user=>{
 const div = document.createElement("div");
-div.className = "user";
-div.textContent =
-"ID: "+user.user_id+" | @"+(user.username || "no username")+
-" | Balance: ৳"+Number(user.balance).toFixed(2);
+div.className = "item";
+div.textContent = "ID: "+user.user_id+" | @"+
+(user.username || "no username")+" | Balance: ৳"+
+Number(user.balance).toFixed(2);
 box.appendChild(div);
 });
 }catch(error){
-box.textContent = "Unable to load users.";
+box.textContent = error.message;
 }
 }
 
@@ -121,13 +203,12 @@ async function updateBalance(){
 const user_id = Number(document.getElementById("userId").value);
 const amount = Number(document.getElementById("amount").value);
 const action = document.getElementById("action").value;
-const message = document.getElementById("message");
+const message = document.getElementById("balanceMessage");
 
 if(!user_id || !amount || amount <= 0){
 message.textContent = "Enter a valid User ID and amount.";
 return;
 }
-
 message.textContent = "Updating...";
 try{
 const response = await fetch("/api/admin/balance",{
@@ -137,16 +218,81 @@ body:JSON.stringify({user_id,amount,action})
 });
 const data = await response.json();
 if(!response.ok) throw new Error(data.detail || "Update failed");
-message.textContent =
-"Success! New balance: ৳"+Number(data.new_balance).toFixed(2);
+message.textContent = "Success! New balance: ৳"+
+Number(data.new_balance).toFixed(2);
 document.getElementById("amount").value = "";
 loadUsers();
+loadMe();
 }catch(error){
 message.textContent = error.message;
 }
 }
 
+async function loadAdminWithdrawals(){
+const box = document.getElementById("adminWithdrawals");
+box.textContent = "Loading requests...";
+try{
+const response = await fetch("/api/admin/withdrawals",{headers});
+if(!response.ok) throw new Error("Could not load requests");
+const data = await response.json();
+box.innerHTML = "";
+if(data.withdrawals.length === 0){
+box.textContent = "No withdrawal requests yet.";
+return;
+}
+data.withdrawals.forEach(item=>{
+const div = document.createElement("div");
+div.className = "item";
+
+const info = document.createElement("p");
+info.textContent =
+"Request #"+item.id+" | User: "+item.user_id+
+" | ৳"+Number(item.amount).toFixed(2)+
+" | "+item.method+" | "+item.account_number+
+" | Status: "+item.status;
+div.appendChild(info);
+
+if(item.status === "pending"){
+const approve = document.createElement("button");
+approve.textContent = "Approve";
+approve.onclick = ()=>decideWithdrawal(item.id,"approve");
+
+const reject = document.createElement("button");
+reject.textContent = "Reject";
+reject.className = "danger";
+reject.onclick = ()=>decideWithdrawal(item.id,"reject");
+
+div.appendChild(approve);
+div.appendChild(reject);
+}
+box.appendChild(div);
+});
+}catch(error){
+box.textContent = error.message;
+}
+}
+
+async function decideWithdrawal(id,action){
+if(!confirm("Are you sure you want to "+action+" this request?")) return;
+try{
+const response = await fetch("/api/admin/withdrawal-decision",{
+method:"POST",
+headers,
+body:JSON.stringify({withdrawal_id:id,action})
+});
+const data = await response.json();
+if(!response.ok) throw new Error(data.detail || "Action failed");
+alert("Request "+data.status+" successfully.");
+loadAdminWithdrawals();
+loadUsers();
 loadMe();
+}catch(error){
+alert(error.message);
+}
+}
+
+loadMe();
+loadMyWithdrawals();
 </script>
 </body>
 </html>
