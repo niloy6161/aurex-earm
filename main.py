@@ -37,7 +37,7 @@ def db():
     return sqlite3.connect(DATABASE)
 
 
-def init_db():
+def init_db(): 
     conn = db()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
@@ -56,11 +56,32 @@ def init_db():
             status TEXT DEFAULT 'pending',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
+    """) 
+    
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            description TEXT DEFAULT '',
+            link TEXT NOT NULL,
+            reward REAL NOT NULL,
+            active INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
     """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS task_submissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            status TEXT DEFAULT 'pending',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(task_id, user_id)
+        )
+     """)
     conn.commit()
     conn.close()
-
-
 def verify_telegram_data(init_data):
     if not BOT_TOKEN or not init_data:
         return None
