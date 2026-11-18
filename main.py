@@ -79,7 +79,14 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(task_id, user_id)
         )
-     """)
+            conn.execute("""
+        CREATE TABLE IF NOT EXISTS referrals (
+            referred_user_id INTEGER PRIMARY KEY,
+            referrer_user_id INTEGER NOT NULL,
+            rewarded INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     conn.commit()
     conn.close()
 def verify_telegram_data(init_data):
