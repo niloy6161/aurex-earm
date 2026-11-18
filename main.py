@@ -21,13 +21,17 @@ from aiogram.types import (
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 WEBAPP_URL = os.getenv("WEBAPP_URL", "")
+BOT_USERNAME = os.getenv("BOT_USERNAME", "AurexEarn_Bot").lstrip("@")
+
 ADMIN_IDS = [
     int(x.strip())
     for x in os.getenv("ADMIN_IDS", "6359796291").split(",")
     if x.strip().isdigit()
 ]
+
 DATABASE = "aurex_earn.db"
 MIN_WITHDRAW = 50
+REFERRAL_REWARD = 1
 
 bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
 dp = Dispatcher()
@@ -37,8 +41,9 @@ def db():
     return sqlite3.connect(DATABASE)
 
 
-def init_db(): 
+def init_db():
     conn = db()
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -46,6 +51,7 @@ def init_db():
             balance REAL DEFAULT 0
         )
     """)
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS withdrawals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,8 +62,8 @@ def init_db():
             status TEXT DEFAULT 'pending',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-    """) 
-    
+    """)
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,7 +85,9 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(task_id, user_id)
         )
-            conn.execute("""
+    """)
+
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS referrals (
             referred_user_id INTEGER PRIMARY KEY,
             referrer_user_id INTEGER NOT NULL,
@@ -87,8 +95,11 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
     conn.commit()
     conn.close()
+
+
 def verify_telegram_data(init_data):
     if not BOT_TOKEN or not init_data:
         return None
@@ -120,6 +131,7 @@ def verify_telegram_data(init_data):
             return None
 
         auth_date = int(data.get("auth_date", "0"))
+
         if time.time() - auth_date > 86400:
             return None
 
@@ -133,29 +145,83 @@ async def get_verified_user(request: Request):
     user = verify_telegram_data(
         request.headers.get("X-Telegram-Init-Data")
     )
+
     if not user:
-        raise HTTPException(status_code=401, detail="Invalid Telegram login")
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid Telegram login"
+        )
+
     return user
 
 
 async def require_admin(request: Request):
     user = await get_verified_user(request)
+
     if user.get("id") not in ADMIN_IDS:
-        raise HTTPException(status_code=403, detail="Admin access denied")
+        raise HTTPException(
+            status_code=403,
+            detail="Admin access denied"
+        )
+
     return user
 
 
 @dp.message(CommandStart())
 async def start(message: Message):
+    user_id = message.from_user.id
+    username = message.from_user.username or ""
+
     conn = db()
+
+    existing_user = conn.execute(
+        "SELECT user_id FROM users WHERE user_id = ?",
+        (user_id,)
+    ).fetchone()
+
+    is_new_user = existing_user is None
+
     conn.execute(
         "INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)",
-        (message.from_user.id, message.from_user.username or "")
+        (user_id, username)
     )
+
+    conn.execute(
+        "UPDATE users SET username = ? WHERE user_id = ?",
+        (username, user_id)
+    )
+
+    # Referral attribution only for a genuinely new user
+    parts = (message.text or "").split(maxsplit=1)
+
+    if is_new_user and len(parts) > 1:
+        payload = parts[1].strip()
+
+        if payload.startswith("ref_"):
+            try:
+                referrer_id = int(payload[4:])
+
+                if referrer_id != user_id:
+                    referrer = conn.execute(
+                        "SELECT user_id FROM users WHERE user_id = ?",
+                        (referrer_id,)
+                    ).fetchone()
+
+                    if referrer:
+                        conn.execute("""
+                            INSERT OR IGNORE INTO referrals
+                            (referred_user_id, referrer_user_id)
+                            VALUES (?, ?)
+                        """, (user_id, referrer_id))
+
+            except ValueError:
+                pass
+
     conn.commit()
     conn.close()
 
     keyboard = None
+
     if WEBAPP_URL:
         keyboard = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(
@@ -178,11 +244,14 @@ async def run_bot():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+
     task = asyncio.create_task(run_bot()) if bot else None
+
     yield
 
     if task:
         task.cancel()
+
         try:
             await task
         except asyncio.CancelledError:
@@ -203,22 +272,33 @@ async def health():
 @app.get("/api/me")
 async def get_my_balance(request: Request):
     user = await get_verified_user(request)
+
     user_id = user["id"]
     username = user.get("username", "")
 
     conn = db()
+
     conn.execute(
         "INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)",
         (user_id, username)
     )
+
     conn.execute(
         "UPDATE users SET username = ? WHERE user_id = ?",
         (username, user_id)
     )
+
     row = conn.execute(
         "SELECT balance FROM users WHERE user_id = ?",
         (user_id,)
     ).fetchone()
+
+    referral_stats = conn.execute("""
+        SELECT COUNT(*), COALESCE(SUM(rewarded), 0)
+        FROM referrals
+        WHERE referrer_user_id = ?
+    """, (user_id,)).fetchone()
+
     conn.commit()
     conn.close()
 
@@ -226,17 +306,25 @@ async def get_my_balance(request: Request):
         "user_id": user_id,
         "username": username,
         "balance": row[0] if row else 0,
-        "currency": "BDT"
+        "currency": "BDT",
+        "referral_link": (
+            f"https://t.me/{BOT_USERNAME}?start=ref_{user_id}"
+        ),
+        "referral_count": referral_stats[0],
+        "referral_rewards": referral_stats[1]
     }
 
 
 @app.get("/api/admin/users")
 async def admin_users(request: Request):
     await require_admin(request)
+
     conn = db()
+
     rows = conn.execute(
         "SELECT user_id, username, balance FROM users ORDER BY user_id DESC"
     ).fetchall()
+
     conn.close()
 
     return {
@@ -259,11 +347,16 @@ async def update_balance(data: BalanceUpdate, request: Request):
     await require_admin(request)
 
     if data.amount <= 0 or data.action not in ["add", "deduct"]:
-        raise HTTPException(status_code=400, detail="Invalid amount or action")
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid amount or action"
+        )
 
     conn = db()
+
     row = conn.execute(
-        "SELECT balance FROM users WHERE user_id = ?", (data.user_id,)
+        "SELECT balance FROM users WHERE user_id = ?",
+        (data.user_id,)
     ).fetchone()
 
     if not row:
@@ -271,22 +364,31 @@ async def update_balance(data: BalanceUpdate, request: Request):
         raise HTTPException(status_code=404, detail="User not found")
 
     new_balance = (
-        row[0] + data.amount if data.action == "add"
+        row[0] + data.amount
+        if data.action == "add"
         else row[0] - data.amount
     )
 
     if new_balance < 0:
         conn.close()
-        raise HTTPException(status_code=400, detail="Insufficient balance")
+        raise HTTPException(
+            status_code=400,
+            detail="Insufficient balance"
+        )
 
     conn.execute(
         "UPDATE users SET balance = ? WHERE user_id = ?",
         (new_balance, data.user_id)
     )
+
     conn.commit()
     conn.close()
 
-    return {"success": True, "user_id": data.user_id, "new_balance": new_balance}
+    return {
+        "success": True,
+        "user_id": data.user_id,
+        "new_balance": new_balance
+    }
 
 
 class WithdrawRequest(BaseModel):
@@ -306,13 +408,21 @@ async def create_withdrawal(data: WithdrawRequest, request: Request):
         )
 
     if data.method not in ["bKash", "Nagad"]:
-        raise HTTPException(status_code=400, detail="Invalid payment method")
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid payment method"
+        )
 
     number = data.account_number.strip()
+
     if len(number) < 8 or len(number) > 20:
-        raise HTTPException(status_code=400, detail="Invalid payment number")
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid payment number"
+        )
 
     conn = db()
+
     try:
         conn.execute("BEGIN IMMEDIATE")
 
@@ -322,10 +432,16 @@ async def create_withdrawal(data: WithdrawRequest, request: Request):
         ).fetchone()
 
         if not row:
-            raise HTTPException(status_code=404, detail="User not found")
+            raise HTTPException(
+                status_code=404,
+                detail="User not found"
+            )
 
         if row[0] < data.amount:
-            raise HTTPException(status_code=400, detail="Insufficient balance")
+            raise HTTPException(
+                status_code=400,
+                detail="Insufficient balance"
+            )
 
         conn.execute(
             "UPDATE users SET balance = balance - ? WHERE user_id = ?",
@@ -339,6 +455,7 @@ async def create_withdrawal(data: WithdrawRequest, request: Request):
         """, (user["id"], data.amount, data.method, number))
 
         withdrawal_id = cursor.lastrowid
+
         conn.commit()
 
         return {
@@ -351,6 +468,7 @@ async def create_withdrawal(data: WithdrawRequest, request: Request):
     except HTTPException:
         conn.rollback()
         raise
+
     finally:
         conn.close()
 
@@ -358,13 +476,16 @@ async def create_withdrawal(data: WithdrawRequest, request: Request):
 @app.get("/api/my-withdrawals")
 async def my_withdrawals(request: Request):
     user = await get_verified_user(request)
+
     conn = db()
+
     rows = conn.execute("""
         SELECT id, amount, method, account_number, status, created_at
         FROM withdrawals
         WHERE user_id = ?
         ORDER BY id DESC
     """, (user["id"],)).fetchall()
+
     conn.close()
 
     return {
@@ -385,12 +506,15 @@ async def my_withdrawals(request: Request):
 @app.get("/api/admin/withdrawals")
 async def admin_withdrawals(request: Request):
     await require_admin(request)
+
     conn = db()
+
     rows = conn.execute("""
         SELECT id, user_id, amount, method, account_number, status, created_at
         FROM withdrawals
         ORDER BY id DESC
     """).fetchall()
+
     conn.close()
 
     return {
@@ -419,26 +543,39 @@ async def decide_withdrawal(data: WithdrawalDecision, request: Request):
     await require_admin(request)
 
     if data.action not in ["approve", "reject"]:
-        raise HTTPException(status_code=400, detail="Invalid action")
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid action"
+        )
 
     conn = db()
+
     try:
         conn.execute("BEGIN IMMEDIATE")
 
         row = conn.execute("""
             SELECT user_id, amount, status
-            FROM withdrawals WHERE id = ?
+            FROM withdrawals
+            WHERE id = ?
         """, (data.withdrawal_id,)).fetchone()
 
         if not row:
-            raise HTTPException(status_code=404, detail="Request not found")
+            raise HTTPException(
+                status_code=404,
+                detail="Request not found"
+            )
 
         user_id, amount, status = row
 
         if status != "pending":
-            raise HTTPException(status_code=400, detail="Request already processed")
+            raise HTTPException(
+                status_code=400,
+                detail="Request already processed"
+            )
 
-        new_status = "approved" if data.action == "approve" else "rejected"
+        new_status = (
+            "approved" if data.action == "approve" else "rejected"
+        )
 
         conn.execute(
             "UPDATE withdrawals SET status = ? WHERE id = ?",
@@ -477,15 +614,15 @@ async def decide_withdrawal(data: WithdrawalDecision, request: Request):
     except HTTPException:
         conn.rollback()
         raise
+
     finally:
         conn.close()
-
-
 
 
 @app.get("/api")
 async def home():
     return {"message": "Aurex Earn is running"}
+
 
 class TaskCreate(BaseModel):
     title: str
@@ -507,15 +644,28 @@ class TaskDecision(BaseModel):
 async def create_task(data: TaskCreate, request: Request):
     await require_admin(request)
 
-    if not data.title.strip() or not data.link.strip() or data.reward <= 0:
-        raise HTTPException(status_code=400, detail="Invalid task details")
+    if (
+        not data.title.strip()
+        or not data.link.strip()
+        or data.reward <= 0
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid task details"
+        )
 
     conn = db()
+
     conn.execute("""
         INSERT INTO tasks (title, description, link, reward)
         VALUES (?, ?, ?, ?)
-    """, (data.title.strip(), data.description.strip(),
-          data.link.strip(), data.reward))
+    """, (
+        data.title.strip(),
+        data.description.strip(),
+        data.link.strip(),
+        data.reward
+    ))
+
     conn.commit()
     conn.close()
 
@@ -525,6 +675,7 @@ async def create_task(data: TaskCreate, request: Request):
 @app.get("/api/tasks")
 async def get_tasks(request: Request):
     user = await get_verified_user(request)
+
     conn = db()
 
     rows = conn.execute("""
@@ -538,6 +689,7 @@ async def get_tasks(request: Request):
     """, (user["id"],)).fetchall()
 
     conn.close()
+
     return {
         "tasks": [
             {
@@ -556,6 +708,7 @@ async def get_tasks(request: Request):
 @app.post("/api/tasks/submit")
 async def submit_task(data: TaskSubmit, request: Request):
     user = await get_verified_user(request)
+
     conn = db()
 
     task = conn.execute(
@@ -565,40 +718,54 @@ async def submit_task(data: TaskSubmit, request: Request):
 
     if not task:
         conn.close()
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(
+            status_code=404,
+            detail="Task not found"
+        )
 
     try:
         conn.execute("""
             INSERT INTO task_submissions (task_id, user_id)
             VALUES (?, ?)
         """, (data.task_id, user["id"]))
+
         conn.commit()
+
     except sqlite3.IntegrityError:
         conn.close()
         raise HTTPException(
-            status_code=400, detail="Task already submitted"
+            status_code=400,
+            detail="Task already submitted"
         )
 
     conn.close()
+
     return {"success": True, "status": "pending"}
 
 
 @app.get("/api/admin/tasks")
 async def admin_get_tasks(request: Request):
     await require_admin(request)
+
     conn = db()
+
     rows = conn.execute("""
         SELECT id, title, description, link, reward, active
-        FROM tasks ORDER BY id DESC
+        FROM tasks
+        ORDER BY id DESC
     """).fetchall()
+
     conn.close()
 
     return {
         "tasks": [
             {
-                "id": r[0], "title": r[1],
-                "description": r[2], "link": r[3],
-                "reward": r[4], "active": r[5]
+                "id": r[0],
+                "title": r[1],
+                "description": r[2],
+                "link": r[3],
+                "reward": r[4],
+                "active": r[5]
             }
             for r in rows
         ]
@@ -608,7 +775,9 @@ async def admin_get_tasks(request: Request):
 @app.get("/api/admin/task-submissions")
 async def admin_task_submissions(request: Request):
     await require_admin(request)
+
     conn = db()
+
     rows = conn.execute("""
         SELECT s.id, s.task_id, t.title, s.user_id,
                u.username, t.reward, s.status, s.created_at
@@ -617,15 +786,20 @@ async def admin_task_submissions(request: Request):
         JOIN users u ON u.user_id = s.user_id
         ORDER BY s.id DESC
     """).fetchall()
+
     conn.close()
 
     return {
         "submissions": [
             {
-                "id": r[0], "task_id": r[1],
-                "title": r[2], "user_id": r[3],
-                "username": r[4], "reward": r[5],
-                "status": r[6], "created_at": r[7]
+                "id": r[0],
+                "task_id": r[1],
+                "title": r[2],
+                "user_id": r[3],
+                "username": r[4],
+                "reward": r[5],
+                "status": r[6],
+                "created_at": r[7]
             }
             for r in rows
         ]
@@ -637,9 +811,15 @@ async def decide_task(data: TaskDecision, request: Request):
     await require_admin(request)
 
     if data.action not in ["approve", "reject"]:
-        raise HTTPException(status_code=400, detail="Invalid action")
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid action"
+        )
 
     conn = db()
+
+    referral_referrer_id = None
+
     try:
         conn.execute("BEGIN IMMEDIATE")
 
@@ -651,14 +831,22 @@ async def decide_task(data: TaskDecision, request: Request):
         """, (data.submission_id,)).fetchone()
 
         if not row:
-            raise HTTPException(status_code=404, detail="Submission not found")
+            raise HTTPException(
+                status_code=404,
+                detail="Submission not found"
+            )
 
         user_id, status, reward = row
 
         if status != "pending":
-            raise HTTPException(status_code=400, detail="Already processed")
+            raise HTTPException(
+                status_code=400,
+                detail="Already processed"
+            )
 
-        new_status = "approved" if data.action == "approve" else "rejected"
+        new_status = (
+            "approved" if data.action == "approve" else "rejected"
+        )
 
         conn.execute(
             "UPDATE task_submissions SET status = ? WHERE id = ?",
@@ -666,10 +854,41 @@ async def decide_task(data: TaskDecision, request: Request):
         )
 
         if data.action == "approve":
+            # Normal task reward
             conn.execute(
                 "UPDATE users SET balance = balance + ? WHERE user_id = ?",
                 (reward, user_id)
             )
+
+            # Referral reward: only once after the referred user's
+            # first approved task
+            referral = conn.execute("""
+                SELECT referrer_user_id
+                FROM referrals
+                WHERE referred_user_id = ? AND rewarded = 0
+            """, (user_id,)).fetchone()
+
+            if referral:
+                possible_referrer_id = referral[0]
+
+                referrer_exists = conn.execute(
+                    "SELECT user_id FROM users WHERE user_id = ?",
+                    (possible_referrer_id,)
+                ).fetchone()
+
+                if referrer_exists:
+                    conn.execute(
+                        "UPDATE users SET balance = balance + ? WHERE user_id = ?",
+                        (REFERRAL_REWARD, possible_referrer_id)
+                    )
+
+                    conn.execute("""
+                        UPDATE referrals
+                        SET rewarded = 1
+                        WHERE referred_user_id = ? AND rewarded = 0
+                    """, (user_id,))
+
+                    referral_referrer_id = possible_referrer_id
 
         conn.commit()
 
@@ -682,16 +901,31 @@ async def decide_task(data: TaskDecision, request: Request):
                     )
                 else:
                     await bot.send_message(
-                        user_id, "❌ Your task submission was rejected."
+                        user_id,
+                        "❌ Your task submission was rejected."
                     )
+
+                if referral_referrer_id:
+                    await bot.send_message(
+                        referral_referrer_id,
+                        "🎉 Referral reward received!\n"
+                        "Your referred user completed their first approved task.\n"
+                        f"৳{REFERRAL_REWARD:.2f} has been added to your balance."
+                    )
+
             except Exception:
                 pass
 
-        return {"success": True, "status": new_status}
+        return {
+            "success": True,
+            "status": new_status,
+            "referral_rewarded": referral_referrer_id is not None
+        }
 
     except HTTPException:
         conn.rollback()
         raise
+
     finally:
         conn.close()
 
