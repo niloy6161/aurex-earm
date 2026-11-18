@@ -1,0 +1,39 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Aurex Earn</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+  <main class="app">
+    <h1>✨ Aurex Earn</h1>
+    <p class="subtitle">Welcome to your earning journey!</p>
+
+    <section class="balance">
+      <p>Your Balance</p>
+      <h2>৳0.00</h2>
+    </section>
+
+    <section class="tasks">
+      <h3>Available Tasks</h3>
+      <p>🚀 More earning tasks coming soon!</p>
+    </section>
+
+    <button onclick="showMessage()">Get Started</button>
+  </main>
+
+  <script>
+    const tg = window.Telegram.WebApp;
+    tg.ready();
+    tg.expand();
+
+    function showMessage() {
+      alert("Welcome to Aurex Earn!");
+    }
+  </script>
+</body>
+</html>
